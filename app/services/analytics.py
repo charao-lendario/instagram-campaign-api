@@ -291,19 +291,12 @@ def get_theme_distribution(
 ) -> ThemeDistributionResponse:
     """Get theme distribution with per-candidate breakdown.
 
-    Uses PL/pgSQL get_theme_distribution for aggregate counts, then
-    builds per-candidate breakdown with additional queries.
+    Queries themes table directly with joins, aggregating counts in Python
+    to avoid PL/pgSQL round() and ambiguity issues.
     """
     client = get_supabase()
 
-    params: dict[str, Any] = {}
-    if candidate_id:
-        params["p_candidate_id"] = candidate_id
-
-    rpc_result = client.rpc("get_theme_distribution", params).execute()
-    rows = rpc_result.data or []
-
-    # Get all active candidates for by_candidate breakdown
+    # Get all active candidates
     candidates_result = (
         client.table("candidates")
         .select("id, username")
@@ -312,55 +305,51 @@ def get_theme_distribution(
     )
     candidates = candidates_result.data or []
 
-    themes: list[ThemeDistribution] = []
-    for row in rows:
+    # Fetch raw theme data with candidate info
+    query = (
+        client.table("themes")
+        .select("theme, comment_id, comments!inner(post_id, posts!inner(candidate_id))")
+    )
+    raw_result = query.execute()
+    raw_rows = raw_result.data or []
+
+    # Aggregate in Python
+    from collections import defaultdict
+
+    theme_totals: dict[str, int] = defaultdict(int)
+    theme_by_candidate: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+
+    for row in raw_rows:
         theme_name = row["theme"]
-        total_count = int(row.get("comment_count", 0))
-        percentage = float(row.get("percentage", 0.0))
+        cid = row["comments"]["posts"]["candidate_id"]
 
-        # Build per-candidate counts for this theme
+        if candidate_id and cid != candidate_id:
+            continue
+
+        theme_totals[theme_name] += 1
+        theme_by_candidate[theme_name][cid] += 1
+
+    total_themed = sum(theme_totals.values()) or 1
+    cand_lookup = {c["id"]: c["username"] for c in candidates}
+
+    themes: list[ThemeDistribution] = []
+    for theme_name, count in sorted(theme_totals.items(), key=lambda x: -x[1]):
         by_candidate: list[CandidateThemeCount] = []
-
-        if not candidate_id:
-            # Get per-candidate breakdown
-            for cand in candidates:
-                cand_params = {"p_candidate_id": cand["id"]}
-                cand_rpc = client.rpc(
-                    "get_theme_distribution",
-                    cand_params,
-                ).execute()
-                cand_rows = cand_rpc.data or []
-                cand_count = 0
-                for cr in cand_rows:
-                    if cr["theme"] == theme_name:
-                        cand_count = int(cr.get("comment_count", 0))
-                        break
-                if cand_count > 0:
-                    by_candidate.append(
-                        CandidateThemeCount(
-                            candidate_id=UUID(cand["id"]),
-                            username=cand["username"],
-                            count=cand_count,
-                        )
+        for cid, ccount in theme_by_candidate[theme_name].items():
+            if cid in cand_lookup:
+                by_candidate.append(
+                    CandidateThemeCount(
+                        candidate_id=UUID(cid),
+                        username=cand_lookup[cid],
+                        count=ccount,
                     )
-        else:
-            # Single candidate -- the count IS the candidate count
-            for cand in candidates:
-                if cand["id"] == candidate_id:
-                    by_candidate.append(
-                        CandidateThemeCount(
-                            candidate_id=UUID(cand["id"]),
-                            username=cand["username"],
-                            count=total_count,
-                        )
-                    )
-                    break
+                )
 
         themes.append(
             ThemeDistribution(
                 theme=theme_name,
-                count=total_count,
-                percentage=percentage,
+                count=count,
+                percentage=round((count / total_themed) * 100, 2),
                 by_candidate=by_candidate,
             )
         )
@@ -448,37 +437,74 @@ def get_post_rankings(
 def get_comparison() -> ComparisonResponse:
     """Get side-by-side candidate comparison with trend analysis.
 
-    Uses PL/pgSQL get_candidate_comparison for core metrics and trend data.
-    Adds top_themes from get_theme_distribution per candidate.
+    Uses get_candidate_overview per candidate for core metrics and
+    calculates trend from recent vs previous posts in Python.
     """
     client = get_supabase()
 
-    rpc_result = client.rpc("get_candidate_comparison", {}).execute()
-    rows = rpc_result.data or []
+    # Get active candidates
+    cand_result = (
+        client.table("candidates")
+        .select("id, username, display_name")
+        .eq("is_active", True)
+        .order("username")
+        .execute()
+    )
 
     candidates: list[CandidateComparison] = []
-    for row in rows:
-        cid = row["candidate_id"]
+    for cand in cand_result.data or []:
+        cid = cand["id"]
+
+        # Reuse get_candidate_overview RPC (which works)
+        overview = client.rpc(
+            "get_candidate_overview", {"p_candidate_id": cid}
+        ).execute()
+        ov = overview.data[0] if overview.data else {}
 
         # Get top 3 themes for this candidate
-        theme_result = client.rpc(
-            "get_theme_distribution",
-            {"p_candidate_id": cid},
-        ).execute()
-        theme_rows = theme_result.data or []
+        theme_resp = get_theme_distribution(candidate_id=cid)
         top_themes = [
-            ThemeCount(
-                theme=tr["theme"],
-                count=int(tr.get("comment_count", 0)),
-            )
-            for tr in theme_rows[:3]
+            ThemeCount(theme=t.theme, count=t.count)
+            for t in theme_resp.themes[:3]
         ]
 
-        # Calculate trend direction
-        recent_avg = float(row.get("recent_avg_sentiment", 0.0))
-        previous_avg = float(row.get("previous_avg_sentiment", 0.0))
-        delta = round(recent_avg - previous_avg, 4)
+        # Calculate trend: recent 5 posts vs previous 5 posts
+        posts_result = (
+            client.table("posts")
+            .select("id, posted_at")
+            .eq("candidate_id", cid)
+            .order("posted_at", desc=True)
+            .limit(10)
+            .execute()
+        )
+        post_ids = [p["id"] for p in (posts_result.data or [])]
+        recent_ids = post_ids[:5]
+        previous_ids = post_ids[5:10]
 
+        recent_avg = 0.0
+        previous_avg = 0.0
+
+        if recent_ids:
+            sent_result = (
+                client.table("sentiment_scores")
+                .select("vader_compound, comments!inner(post_id)")
+                .in_("comments.post_id", recent_ids)
+                .execute()
+            )
+            scores = [float(r["vader_compound"]) for r in (sent_result.data or []) if r.get("vader_compound") is not None]
+            recent_avg = sum(scores) / len(scores) if scores else 0.0
+
+        if previous_ids:
+            sent_result2 = (
+                client.table("sentiment_scores")
+                .select("vader_compound, comments!inner(post_id)")
+                .in_("comments.post_id", previous_ids)
+                .execute()
+            )
+            scores2 = [float(r["vader_compound"]) for r in (sent_result2.data or []) if r.get("vader_compound") is not None]
+            previous_avg = sum(scores2) / len(scores2) if scores2 else 0.0
+
+        delta = round(recent_avg - previous_avg, 4)
         if delta > 0.02:
             direction = "improving"
         elif delta < -0.02:
@@ -489,16 +515,16 @@ def get_comparison() -> ComparisonResponse:
         candidates.append(
             CandidateComparison(
                 candidate_id=UUID(cid),
-                username=row["username"],
-                display_name=row.get("display_name"),
-                total_posts=int(row.get("total_posts", 0)),
-                total_comments=int(row.get("total_comments", 0)),
-                average_sentiment_score=float(row.get("avg_sentiment", 0.0)),
-                total_engagement=int(row.get("total_engagement", 0)),
+                username=cand["username"],
+                display_name=cand.get("display_name"),
+                total_posts=int(ov.get("total_posts", 0)),
+                total_comments=int(ov.get("total_comments", 0)),
+                average_sentiment_score=float(ov.get("avg_sentiment", 0.0)),
+                total_engagement=int(ov.get("total_engagement", 0)),
                 sentiment_distribution=SentimentDistribution(
-                    positive=int(row.get("positive_count", 0)),
-                    negative=int(row.get("negative_count", 0)),
-                    neutral=int(row.get("neutral_count", 0)),
+                    positive=int(ov.get("positive_count", 0)),
+                    negative=int(ov.get("negative_count", 0)),
+                    neutral=int(ov.get("neutral_count", 0)),
                 ),
                 top_themes=top_themes,
                 trend=SentimentTrend(
