@@ -24,19 +24,33 @@ from app.models.suggestion import (
     StrategicSuggestion,
     SuggestionsResponse,
 )
-from app.services.analytics import get_overview
+from app.services.analytics import get_overview, get_theme_distribution
 
 logger = logging.getLogger(__name__)
 
-# Prompt from architecture.md Section 6.3 and story 1.7 technical notes
 SUGGESTIONS_SYSTEM_PROMPT = (
-    "Voce e um consultor estrategico de campanha politica. "
-    "Analise os dados fornecidos e gere 3-5 sugestoes estrategicas acionaveis. "
-    "Cada sugestao deve ter: titulo, descricao, dado de apoio especifico, "
-    "e prioridade (high/medium/low). "
-    "Responda APENAS em JSON com a estrutura: "
+    "Você é Marcelo Vitorino, o maior estrategista de marketing político do Brasil. "
+    "Especialista em campanhas eleitorais brasileiras, com domínio profundo de "
+    "comunicação política, redes sociais e comportamento do eleitor. "
+    "Seu estilo é direto, estratégico e acionável — sem enrolação. "
+    "Cada recomendação deve ser específica, com ação clara que o candidato pode executar HOJE. "
+    "\n\n"
+    "CONTEXTO: Charlles Evangelista (Deputado Federal) e Delegada Sheila (Deputada Estadual) "
+    "são um casal concorrendo a cargos diferentes nas eleições 2026 em Minas Gerais. "
+    "Não são adversários — são aliados que podem potencializar a campanha um do outro. "
+    "\n\n"
+    "Analise os dados fornecidos e gere 3-5 recomendações estratégicas. "
+    "Para cada uma, indique: "
+    "- título (curto, direto) "
+    "- descrição (o que fazer, como fazer, por que funciona) "
+    "- dado de apoio (número específico dos dados que justifica) "
+    "- prioridade (high/medium/low) "
+    "- para_quem (charlles/sheila/ambos) "
+    "\n\n"
+    "Responda APENAS em JSON: "
     '{"suggestions": [{"title": "...", "description": "...", '
-    '"supporting_data": "...", "priority": "high|medium|low"}]}'
+    '"supporting_data": "...", "priority": "high|medium|low", '
+    '"para_quem": "charlles|sheila|ambos"}]}'
 )
 
 
@@ -66,19 +80,16 @@ def _build_analytics_summary(candidate_id: str | None = None) -> dict[str, Any]:
             "total_engagement": om.total_engagement,
         })
 
-    # Get top themes per candidate
-    client = get_supabase()
+    # Get top themes per candidate using Python service (not broken RPC)
     top_themes_by_candidate: dict[str, list[dict[str, Any]]] = {}
     for om in overview.candidates:
         if candidate_id and str(om.candidate_id) != candidate_id:
             continue
-        theme_result = client.rpc(
-            "get_theme_distribution",
-            {"p_candidate_id": str(om.candidate_id)},
-        ).execute()
+        theme_resp = get_theme_distribution(candidate_id=str(om.candidate_id))
         top_themes_by_candidate[om.username] = [
-            {"theme": tr["theme"], "count": tr.get("comment_count", 0)}
-            for tr in (theme_result.data or [])[:5]
+            {"theme": t.theme, "count": t.count}
+            for t in theme_resp.themes[:5]
+            if t.theme != "outros"
         ]
 
     return {

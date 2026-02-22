@@ -261,25 +261,50 @@ def _get_word_frequencies(
     texts: list[str],
     top_n: int = 200,
 ) -> list[WordEntry]:
-    """Tokenize texts, filter stop words, count frequencies.
+    """Tokenize texts into bigrams, filter stop words, count frequencies.
 
-    Per story 1.6 technical notes: split, lowercase, filter stop words
-    PT, count frequencies, return top N.
+    Returns bigrams (2-word expressions) for richer context instead of
+    single words. Captures what people are actually saying.
     """
-    words: list[str] = []
+    bigrams: list[str] = []
+    unigrams: list[str] = []
+
     for text in texts:
         normalized = _normalize_for_wordcloud(text)
-        tokens = normalized.split()
-        words.extend(
-            t for t in tokens
+        tokens = [
+            t for t in normalized.split()
             if t not in STOP_WORDS_PT and len(t) > 2
-        )
+        ]
+        # Collect bigrams
+        for i in range(len(tokens) - 1):
+            bigrams.append(f"{tokens[i]} {tokens[i + 1]}")
+        # Collect unigrams as fallback
+        unigrams.extend(tokens)
 
-    counter = Counter(words)
-    return [
-        WordEntry(word=w, count=c)
-        for w, c in counter.most_common(top_n)
-    ]
+    # Combine: prioritize bigrams, fill with unigrams
+    bi_counter = Counter(bigrams)
+    uni_counter = Counter(unigrams)
+
+    entries: list[WordEntry] = []
+    # Top bigrams (with minimum 2 occurrences)
+    for phrase, count in bi_counter.most_common(top_n):
+        if count >= 2:
+            entries.append(WordEntry(word=phrase, count=count))
+
+    # Fill remaining with unigrams
+    remaining = top_n - len(entries)
+    if remaining > 0:
+        # Exclude words already covered by bigrams
+        bigram_words = set()
+        for e in entries:
+            bigram_words.update(e.word.split())
+        for word, count in uni_counter.most_common(top_n):
+            if word not in bigram_words and count >= 2:
+                entries.append(WordEntry(word=word, count=count))
+                if len(entries) >= top_n:
+                    break
+
+    return entries[:top_n]
 
 
 # ---------------------------------------------------------------------------
