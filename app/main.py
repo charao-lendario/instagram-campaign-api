@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.logging import setup_logging
-from app.routers import health, scraping
+from app.routers import analysis, health, scraping
 
 logger = logging.getLogger(__name__)
 
@@ -56,3 +56,4 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 app.include_router(health.router, tags=["Health"])
 app.include_router(scraping.router, prefix="/api/v1/scraping", tags=["Scraping"])
+app.include_router(analysis.router, prefix="/api/v1/analysis", tags=["Analysis"])
