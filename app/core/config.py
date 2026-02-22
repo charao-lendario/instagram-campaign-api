@@ -22,6 +22,8 @@ class Settings(BaseSettings):
 
     # Apify
     APIFY_TOKEN: str = ""
+    APIFY_POST_ACTOR_ID: str = "apify/instagram-post-scraper"
+    APIFY_COMMENT_ACTOR_ID: str = "apify/instagram-comment-scraper"
 
     # LLM
     LLM_PROVIDER: str = "openai"
