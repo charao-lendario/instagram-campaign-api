@@ -17,11 +17,19 @@ class StrategicSuggestion(BaseModel):
     description: str
     supporting_data: str | None = None
     priority: str = "medium"  # "high" | "medium" | "low"
+    categoria: str | None = None
+    acoes_concretas: list[str] | None = None
+    exemplo_post: str | None = None
+    roteiro_video: str | None = None
+    publico_alvo: str | None = None
+    para_quem: str | None = None
+    impacto_esperado: str | None = None
 
 
 class SuggestionsResponse(BaseModel):
     """Full response for POST /api/v1/analytics/suggestions."""
     suggestions: list[StrategicSuggestion] = []
+    resumo_executivo: str | None = None
     generated_at: datetime | None = None
     data_snapshot: dict[str, Any] | None = None
 
