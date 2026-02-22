@@ -74,28 +74,36 @@ class TestSupabaseClient:
 
 
 class TestHealthEndpoint:
-    """AC3: GET /health returns proper payload."""
+    """AC3: GET /health returns proper payload.
+
+    Updated for Story 1.7 AC5: health now includes scheduler status,
+    real last_scrape, and returns 503 when DB is down.
+    """
 
     def test_health_connected(
         self, test_client: TestClient, mock_supabase_module: MagicMock
     ) -> None:
         """Given Supabase is reachable, /health returns database=connected."""
+        # Mock the rpc call for get_last_successful_scrape
+        rpc_result = MagicMock()
+        rpc_result.execute.return_value = MagicMock(data=None)
+        mock_supabase_module.rpc.return_value = rpc_result
+
         response = test_client.get("/health")
         assert response.status_code == 200
         body = response.json()
         assert body["status"] == "ok"
         assert body["database"] == "connected"
-        assert body["scheduler"] == "stopped"
         assert body["last_scrape"] is None
 
     def test_health_disconnected(
         self, test_client: TestClient, mock_supabase_disconnected: MagicMock
     ) -> None:
-        """Given Supabase is unreachable, /health returns database=disconnected."""
+        """Given Supabase is unreachable, /health returns 503 with database=disconnected."""
         response = test_client.get("/health")
-        assert response.status_code == 200
+        assert response.status_code == 503
         body = response.json()
-        assert body["status"] == "ok"
+        assert body["status"] == "degraded"
         assert body["database"] == "disconnected"
 
 

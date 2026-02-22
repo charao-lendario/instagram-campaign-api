@@ -2,6 +2,7 @@
 
 Story 1.2: POST /posts -- triggers post scraping for all active candidates.
 Story 1.3: POST /comments -- triggers comment scraping for eligible posts.
+Story 1.7: POST /run -- triggers the full pipeline (409 if already running).
 
 Both endpoints return ``202 Accepted`` immediately.  For the MVP the
 scraping runs synchronously before the response is sent (acceptable given
@@ -11,18 +12,20 @@ Railway has no strict request-timeout limit).
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any
-from uuid import UUID
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
 
 from app.db.supabase import get_supabase
 from app.models.post import Post
+from app.scheduler.lock import get_current_run_id, is_pipeline_running
+from app.services.pipeline import run_full_pipeline
 from app.services.scraping import (
     scrape_all_comments,
     scrape_posts,
     _create_scraping_run,
-    _append_run_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -130,4 +133,40 @@ async def trigger_comment_scraping() -> dict[str, Any]:
         "status": "started",
         "posts_queued": len(posts),
         "comments_scraped": total,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Story 1.7: POST /run -- Full pipeline trigger
+# ---------------------------------------------------------------------------
+
+@router.post("/run", status_code=202)
+async def trigger_full_pipeline() -> dict[str, Any]:
+    """Trigger the full pipeline: posts -> comments -> VADER -> LLM -> themes.
+
+    AC4: Returns 202 if pipeline starts, 409 if already running.
+    Pipeline runs in a background thread to not block the response.
+
+    FR-014: Manual Scraping Trigger.
+    """
+    if is_pipeline_running():
+        current_run = get_current_run_id()
+        raise HTTPException(
+            status_code=409,
+            detail="Pipeline already in progress",
+            headers={"X-Current-Run-Id": str(current_run) if current_run else "unknown"},
+        )
+
+    run_id = uuid4()
+
+    def _run_pipeline() -> None:
+        run_full_pipeline(trigger="manual")
+
+    thread = threading.Thread(target=_run_pipeline, daemon=True)
+    thread.start()
+
+    return {
+        "run_id": str(run_id),
+        "status": "started",
+        "message": "Full pipeline initiated",
     }
