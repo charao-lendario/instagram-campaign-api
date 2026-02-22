@@ -257,7 +257,7 @@ def scrape_posts(candidate_username: str, run_id: UUID) -> list[Post]:
         apify = _get_apify_client()
         run_result = apify.actor(settings.APIFY_POST_ACTOR_ID).call(
             run_input={
-                "usernames": [candidate_username],
+                "username": [candidate_username],
                 "resultsLimit": 10,
             }
         )
