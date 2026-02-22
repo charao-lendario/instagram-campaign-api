@@ -554,3 +554,157 @@ async def reclassify_ambiguous_comments() -> dict[str, int]:
         "confidence_upgrades": confidence_upgrades,
         "retained_vader_label": retained_vader_label,
     }
+
+
+# ---------------------------------------------------------------------------
+# Contextual Sentiment Analysis (post caption + comments)
+# ---------------------------------------------------------------------------
+
+CONTEXTUAL_SYSTEM_PROMPT = """\
+Você é um analista de sentimento político especializado em campanhas eleitorais brasileiras.
+
+TAREFA: Analisar comentários de um post do Instagram considerando o CONTEXTO do post.
+
+IMPORTANTE: Muitos candidatos postam conteúdo polêmico (denúncias, críticas sociais, temas revoltantes).
+Quando o público reage com revolta ao TEMA do post (ex: "que nojo!", "isso é absurdo!"), isso geralmente
+é APOIO à candidata por denunciar/expor o problema — NÃO é ataque à candidata.
+
+CLASSIFIQUE cada comentário em:
+- "apoio": O comentário APOIA a candidata (inclui revolta com o tema que demonstra concordância)
+- "contra": O comentário ATACA ou CRITICA a candidata diretamente
+- "neutro": Não é possível determinar, ou é comentário genérico (emoji, marcação de amigo, etc.)
+
+Responda APENAS em JSON:
+{"results": [{"index": 0, "classificacao": "apoio|contra|neutro"}, ...]}
+"""
+
+
+async def analyze_post_contextual_sentiment(post_id: str) -> dict:
+    """Analyze all comments of a post with contextual awareness.
+
+    Sends post caption + all comments to LLM in a single call.
+    Returns breakdown of apoio/contra/neutro.
+    """
+    client = get_supabase()
+
+    # Get post data
+    post_result = (
+        client.table("posts")
+        .select("id, caption, candidate_id")
+        .eq("id", post_id)
+        .execute()
+    )
+    if not post_result.data:
+        return {"error": "Post não encontrado"}
+
+    post = post_result.data[0]
+    caption = post.get("caption") or ""
+
+    # Get candidate info
+    cand_result = (
+        client.table("candidates")
+        .select("display_name")
+        .eq("id", post["candidate_id"])
+        .execute()
+    )
+    candidate_name = cand_result.data[0]["display_name"] if cand_result.data else "candidata"
+
+    # Get all comments for this post
+    comments_result = (
+        client.table("comments")
+        .select("id, text")
+        .eq("post_id", post_id)
+        .execute()
+    )
+    comments = comments_result.data or []
+
+    if not comments:
+        return {
+            "post_id": post_id,
+            "caption_preview": caption[:100],
+            "total_comments": 0,
+            "apoio": 0,
+            "contra": 0,
+            "neutro": 0,
+            "apoio_percent": 0,
+            "contra_percent": 0,
+        }
+
+    # Build user message with caption + all comments
+    comment_lines = []
+    for i, c in enumerate(comments):
+        text = (c.get("text") or "").replace("\n", " ").strip()
+        if text:
+            comment_lines.append(f"{i}. {text}")
+
+    user_message = (
+        f"CANDIDATA: {candidate_name}\n\n"
+        f"LEGENDA DO POST:\n{caption[:500]}\n\n"
+        f"COMENTÁRIOS ({len(comment_lines)}):\n"
+        + "\n".join(comment_lines)
+    )
+
+    api_url = "https://api.openai.com/v1/chat/completions"
+    if settings.LLM_PROVIDER != "openai":
+        api_url = f"https://api.{settings.LLM_PROVIDER}.com/v1/chat/completions"
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as http_client:
+            response = await http_client.post(
+                api_url,
+                headers={
+                    "Authorization": f"Bearer {settings.LLM_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": settings.LLM_MODEL,
+                    "messages": [
+                        {"role": "system", "content": CONTEXTUAL_SYSTEM_PROMPT},
+                        {"role": "user", "content": user_message},
+                    ],
+                    "temperature": 0.2,
+                    "max_tokens": 2000,
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+            content_str = data["choices"][0]["message"]["content"]
+
+            clean_content = content_str.strip()
+            if clean_content.startswith("```"):
+                lines = clean_content.split("\n")
+                lines = [line for line in lines if not line.strip().startswith("```")]
+                clean_content = "\n".join(lines)
+
+            parsed = json.loads(clean_content)
+            results = parsed.get("results", [])
+
+            apoio = sum(1 for r in results if r.get("classificacao") == "apoio")
+            contra = sum(1 for r in results if r.get("classificacao") == "contra")
+            neutro = sum(1 for r in results if r.get("classificacao") == "neutro")
+            total = apoio + contra + neutro or 1
+
+            return {
+                "post_id": post_id,
+                "caption_preview": caption[:100],
+                "candidate_name": candidate_name,
+                "total_comments": len(comments),
+                "total_classified": len(results),
+                "apoio": apoio,
+                "contra": contra,
+                "neutro": neutro,
+                "apoio_percent": round((apoio / total) * 100, 1),
+                "contra_percent": round((contra / total) * 100, 1),
+                "neutro_percent": round((neutro / total) * 100, 1),
+            }
+
+    except (httpx.HTTPError, json.JSONDecodeError, KeyError, ValueError) as exc:
+        logger.error(
+            "contextual_sentiment_failed",
+            extra={
+                "post_id": post_id,
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+            },
+        )
+        return {"error": f"Falha na análise: {type(exc).__name__}: {exc}"}

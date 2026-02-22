@@ -13,6 +13,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 
 from app.services.sentiment import (
+    analyze_post_contextual_sentiment,
     get_sentiment_summary,
     reclassify_ambiguous_comments,
     run_vader_analysis,
@@ -105,5 +106,38 @@ async def trigger_llm_fallback() -> dict[str, Any]:
             status_code=500,
             detail=f"LLM fallback failed: {exc}",
         ) from exc
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Contextual Sentiment Analysis (post-level)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/sentiment/contextual/{post_id}", status_code=200)
+async def trigger_contextual_sentiment(post_id: str) -> dict[str, Any]:
+    """Analyze comments of a specific post with contextual awareness.
+
+    Considers the post caption to distinguish topic negativity
+    (supporting the candidate) from candidate negativity (attacking).
+    """
+    try:
+        result = await analyze_post_contextual_sentiment(post_id)
+    except Exception as exc:
+        logger.error(
+            "contextual_sentiment_failed",
+            extra={
+                "post_id": post_id,
+                "error_message": str(exc),
+            },
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Contextual sentiment analysis failed: {exc}",
+        ) from exc
+
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
 
     return result
