@@ -150,3 +150,27 @@ class CandidateComparison(BaseModel):
 class ComparisonResponse(BaseModel):
     """Full response for GET /api/v1/analytics/comparison."""
     candidates: list[CandidateComparison] = []
+
+
+# --- Competitive Analysis ---
+
+class CompetitiveMetrics(BaseModel):
+    """Side-by-side metrics for competitive analysis."""
+    username: str
+    display_name: str | None = None
+    total_posts: int = 0
+    total_comments: int = 0
+    average_sentiment_score: float = 0.0
+    total_engagement: int = 0
+    avg_likes_per_post: float = 0.0
+    avg_comments_per_post: float = 0.0
+    sentiment_distribution: SentimentDistribution = SentimentDistribution()
+    top_themes: list[ThemeCount] = []
+
+
+class CompetitiveAnalysisResponse(BaseModel):
+    """Full response for GET /api/v1/analytics/competitive."""
+    our_candidate: CompetitiveMetrics | None = None
+    competitor: CompetitiveMetrics | None = None
+    engagement_advantage: float = 0.0
+    sentiment_advantage: float = 0.0

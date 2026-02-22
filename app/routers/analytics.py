@@ -15,6 +15,7 @@ from fastapi import APIRouter, Query
 
 from app.models.analytics import (
     ComparisonResponse,
+    CompetitiveAnalysisResponse,
     OverviewResponse,
     PostRankingResponse,
     SentimentTimelineResponse,
@@ -23,6 +24,7 @@ from app.models.analytics import (
 )
 from app.services.analytics import (
     get_comparison,
+    get_competitive_analysis,
     get_overview,
     get_post_rankings,
     get_sentiment_timeline,
@@ -171,3 +173,25 @@ async def analytics_comparison() -> ComparisonResponse:
     FR-011: Candidate Comparison -- side-by-side with trends.
     """
     return get_comparison()
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/analytics/competitive
+# ---------------------------------------------------------------------------
+
+@router.get("/competitive", response_model=CompetitiveAnalysisResponse)
+async def analytics_competitive(
+    our_username: str = Query(
+        default="delegadasheila",
+        description="Username of our candidate",
+    ),
+    competitor_username: str = Query(
+        default="delegadaione",
+        description="Username of the competitor",
+    ),
+) -> CompetitiveAnalysisResponse:
+    """Return competitive analysis between our candidate and a competitor."""
+    return get_competitive_analysis(
+        our_username=our_username,
+        competitor_username=competitor_username,
+    )

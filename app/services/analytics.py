@@ -21,6 +21,8 @@ from app.models.analytics import (
     CandidateComparison,
     CandidateThemeCount,
     ComparisonResponse,
+    CompetitiveAnalysisResponse,
+    CompetitiveMetrics,
     OverviewMetrics,
     OverviewResponse,
     PostRanking,
@@ -562,3 +564,105 @@ def get_comparison() -> ComparisonResponse:
         )
 
     return ComparisonResponse(candidates=candidates)
+
+
+# ---------------------------------------------------------------------------
+# Competitive Analysis
+# ---------------------------------------------------------------------------
+
+def _build_candidate_metrics(
+    cid: str,
+    username: str,
+    display_name: str | None,
+) -> CompetitiveMetrics:
+    """Build metrics for a single candidate."""
+    client = get_supabase()
+
+    overview = client.rpc(
+        "get_candidate_overview", {"p_candidate_id": cid}
+    ).execute()
+    ov = overview.data[0] if overview.data else {}
+
+    total_posts = int(ov.get("total_posts", 0))
+    total_comments = int(ov.get("total_comments", 0))
+    total_engagement = int(ov.get("total_engagement", 0))
+
+    theme_resp = get_theme_distribution(candidate_id=cid)
+    top_themes = [
+        ThemeCount(theme=t.theme, count=t.count)
+        for t in theme_resp.themes[:5]
+        if t.theme != "outros"
+    ]
+
+    return CompetitiveMetrics(
+        username=username,
+        display_name=display_name,
+        total_posts=total_posts,
+        total_comments=total_comments,
+        average_sentiment_score=float(ov.get("avg_sentiment", 0.0)),
+        total_engagement=total_engagement,
+        avg_likes_per_post=round(total_engagement / max(total_posts, 1), 1),
+        avg_comments_per_post=round(total_comments / max(total_posts, 1), 1),
+        sentiment_distribution=SentimentDistribution(
+            positive=int(ov.get("positive_count", 0)),
+            negative=int(ov.get("negative_count", 0)),
+            neutral=int(ov.get("neutral_count", 0)),
+        ),
+        top_themes=top_themes,
+    )
+
+
+def get_competitive_analysis(
+    our_username: str,
+    competitor_username: str,
+) -> CompetitiveAnalysisResponse:
+    """Compare engagement and sentiment between our candidate and a competitor."""
+    client = get_supabase()
+
+    # Resolve candidate IDs
+    our_result = (
+        client.table("candidates")
+        .select("id, username, display_name")
+        .eq("username", our_username)
+        .execute()
+    )
+    comp_result = (
+        client.table("candidates")
+        .select("id, username, display_name")
+        .eq("username", competitor_username)
+        .execute()
+    )
+
+    our_data = our_result.data[0] if our_result.data else None
+    comp_data = comp_result.data[0] if comp_result.data else None
+
+    our_metrics = None
+    comp_metrics = None
+
+    if our_data:
+        our_metrics = _build_candidate_metrics(
+            our_data["id"], our_data["username"], our_data.get("display_name")
+        )
+    if comp_data:
+        comp_metrics = _build_candidate_metrics(
+            comp_data["id"], comp_data["username"], comp_data.get("display_name")
+        )
+
+    engagement_adv = 0.0
+    sentiment_adv = 0.0
+    if our_metrics and comp_metrics:
+        if comp_metrics.avg_likes_per_post > 0:
+            engagement_adv = round(
+                ((our_metrics.avg_likes_per_post - comp_metrics.avg_likes_per_post)
+                 / comp_metrics.avg_likes_per_post) * 100, 1
+            )
+        sentiment_adv = round(
+            our_metrics.average_sentiment_score - comp_metrics.average_sentiment_score, 4
+        )
+
+    return CompetitiveAnalysisResponse(
+        our_candidate=our_metrics,
+        competitor=comp_metrics,
+        engagement_advantage=engagement_adv,
+        sentiment_advantage=sentiment_adv,
+    )
