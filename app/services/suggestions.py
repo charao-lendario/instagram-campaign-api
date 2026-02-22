@@ -165,7 +165,7 @@ async def generate_strategic_suggestions(
     generated_at = datetime.now(timezone.utc)
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=90.0) as client:
             response = await client.post(
                 api_url,
                 headers={
@@ -228,9 +228,10 @@ async def generate_strategic_suggestions(
             extra={
                 "error_type": type(exc).__name__,
                 "error_message": str(exc),
+                "error_detail": repr(exc),
             },
         )
-        raise RuntimeError(f"Failed to generate suggestions: {exc}") from exc
+        raise RuntimeError(f"Failed to generate suggestions ({type(exc).__name__}): {exc}") from exc
 
     # AC7: Persist suggestions in strategic_insights
     if suggestions:
