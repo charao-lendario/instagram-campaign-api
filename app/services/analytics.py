@@ -60,14 +60,7 @@ async def get_overview() -> dict:
 
     return {
         "candidates": candidate_list,
-        "last_scrape": {
-            "id": str(last_scrape["id"]),
-            "started_at": last_scrape["started_at"].isoformat() if last_scrape["started_at"] else None,
-            "completed_at": last_scrape["completed_at"].isoformat() if last_scrape["completed_at"] else None,
-            "status": last_scrape["status"],
-            "posts_scraped": last_scrape["posts_scraped"],
-            "comments_scraped": last_scrape["comments_scraped"],
-        } if last_scrape else None,
+        "last_scrape": last_scrape["started_at"].isoformat() if last_scrape and last_scrape["started_at"] else None,
         "total_comments_analyzed": total_analyzed or 0,
     }
 
@@ -379,17 +372,38 @@ async def get_comparison() -> dict:
                     {"theme": t["theme"], "count": t["cnt"]}
                     for t in themes
                 ],
-                "trend": [
-                    {
-                        "week": t["week"].isoformat() if t["week"] else None,
-                        "average_sentiment": round(float(t["avg_sentiment"]), 4),
-                        "comment_count": t["comment_count"],
-                    }
-                    for t in trend
-                ],
+                "trend": _compute_trend(trend),
             })
 
     return {"candidates": result}
+
+
+def _compute_trend(trend_rows) -> dict:
+    """Compute trend direction from weekly sentiment data."""
+    if len(trend_rows) < 2:
+        return {"direction": "stable", "recent_avg": 0.0, "previous_avg": 0.0, "delta": 0.0}
+
+    mid = len(trend_rows) // 2
+    previous = trend_rows[:mid]
+    recent = trend_rows[mid:]
+
+    prev_avg = sum(float(r["avg_sentiment"]) for r in previous) / len(previous)
+    recent_avg = sum(float(r["avg_sentiment"]) for r in recent) / len(recent)
+    delta = recent_avg - prev_avg
+
+    if delta > 0.02:
+        direction = "improving"
+    elif delta < -0.02:
+        direction = "declining"
+    else:
+        direction = "stable"
+
+    return {
+        "direction": direction,
+        "recent_avg": round(recent_avg, 4),
+        "previous_avg": round(prev_avg, 4),
+        "delta": round(delta, 4),
+    }
 
 
 async def get_competitive(our_username: str, competitor_username: str) -> dict:
