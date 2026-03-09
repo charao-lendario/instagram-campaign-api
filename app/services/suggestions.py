@@ -29,7 +29,7 @@ async def generate_suggestions() -> dict:
                LEFT JOIN posts p ON p.candidate_id = c.id
                LEFT JOIN comments cm ON cm.post_id = p.id
                LEFT JOIN sentiment_scores s ON s.comment_id = cm.id
-               WHERE c.is_active = TRUE
+               WHERE c.is_active = TRUE AND COALESCE(c.is_competitor, FALSE) = FALSE
                GROUP BY c.id, c.username, c.display_name"""
         )
 
