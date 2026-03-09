@@ -1,8 +1,20 @@
 """Analytics service with pure SQL queries via asyncpg."""
 
+from datetime import date, datetime
+
 from app.core.logging import logger
 from app.db.pool import get_pool
 from app.services.themes import extract_words_for_wordcloud
+
+
+def _parse_date(value: str | None) -> date | None:
+    """Parse a date string (YYYY-MM-DD) to a date object."""
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
 
 
 async def get_overview() -> dict:
@@ -97,14 +109,16 @@ async def get_sentiment_timeline(
             params.append(candidate_id)
             idx += 1
 
-        if start_date:
-            query += f" AND p.posted_at >= ${idx}::timestamptz"
-            params.append(start_date)
+        parsed_start = _parse_date(start_date)
+        if parsed_start:
+            query += f" AND p.posted_at >= ${idx}::date"
+            params.append(parsed_start)
             idx += 1
 
-        if end_date:
-            query += f" AND p.posted_at <= ${idx}::timestamptz"
-            params.append(end_date)
+        parsed_end = _parse_date(end_date)
+        if parsed_end:
+            query += f" AND p.posted_at <= (${idx}::date + interval '1 day')"
+            params.append(parsed_end)
             idx += 1
 
         query += """
