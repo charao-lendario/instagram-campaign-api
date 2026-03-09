@@ -143,16 +143,14 @@ async def _scrape_candidate(
 
     client = ApifyClient(settings.APIFY_TOKEN)
 
-    # Run Instagram Profile Scraper
+    # Run Instagram Post Scraper
     run_input = {
-        "directUrls": [f"https://www.instagram.com/{username}/"],
-        "resultsType": "posts",
+        "username": [username],
         "resultsLimit": 30,
-        "addParentData": False,
     }
 
     logger.info(f"Starting Apify actor for @{username}")
-    actor_run = client.actor("apify/instagram-profile-scraper").call(
+    actor_run = client.actor("apify/instagram-post-scraper").call(
         run_input=run_input, timeout_secs=300
     )
 
