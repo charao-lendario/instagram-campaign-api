@@ -172,34 +172,39 @@ async def analyze_contextual_sentiment(post_id: str) -> dict:
             post["id"],
         )
 
+    # Get candidate name
+    async with pool.acquire() as conn:
+        cand_row = await conn.fetchrow(
+            """SELECT ca.display_name FROM candidates ca
+               JOIN posts p ON p.candidate_id = ca.id
+               WHERE p.id = $1::uuid""",
+            post_id,
+        )
+
+    candidate_name = cand_row["display_name"] if cand_row else "Candidato"
+
     total = len(comments)
-    pos = sum(1 for c in comments if c["final_label"] == "positive")
-    neg = sum(1 for c in comments if c["final_label"] == "negative")
-    neu = sum(1 for c in comments if c["final_label"] == "neutral")
-    avg_sentiment = (
-        sum(c["vader_compound"] or 0.0 for c in comments) / total if total else 0.0
-    )
+    classified = sum(1 for c in comments if c["final_label"] is not None)
+    # Map: positive -> apoio, negative -> contra, neutral -> neutro
+    apoio = sum(1 for c in comments if c["final_label"] == "positive")
+    contra = sum(1 for c in comments if c["final_label"] == "negative")
+    neutro = sum(1 for c in comments if c["final_label"] == "neutral")
+
+    caption_text = post["caption"] or ""
+    caption_preview = caption_text[:120] if len(caption_text) > 120 else caption_text
 
     return {
         "post_id": post_id,
-        "caption": post["caption"],
+        "caption_preview": caption_preview,
+        "candidate_name": candidate_name,
         "total_comments": total,
-        "sentiment_distribution": {
-            "positive": pos,
-            "negative": neg,
-            "neutral": neu,
-        },
-        "average_sentiment": round(avg_sentiment, 4),
-        "comments": [
-            {
-                "id": str(c["id"]),
-                "text": c["text"],
-                "author": c["author_username"],
-                "sentiment": c["final_label"],
-                "compound": round(c["vader_compound"], 4) if c["vader_compound"] else None,
-            }
-            for c in comments
-        ],
+        "total_classified": classified,
+        "apoio": apoio,
+        "contra": contra,
+        "neutro": neutro,
+        "apoio_percent": round(apoio / classified * 100, 1) if classified else 0.0,
+        "contra_percent": round(contra / classified * 100, 1) if classified else 0.0,
+        "neutro_percent": round(neutro / classified * 100, 1) if classified else 0.0,
     }
 
 

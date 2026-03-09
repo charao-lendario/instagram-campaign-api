@@ -448,19 +448,36 @@ async def get_competitive(our_username: str, competitor_username: str) -> dict:
         if not row:
             return None
 
+        total_posts = row["total_posts"] or 1
+        total_engagement = int(row["total_engagement"])
+
+        # Get top themes
+        async with pool.acquire() as conn2:
+            themes = await conn2.fetch(
+                """SELECT t.theme, COUNT(*) as cnt
+                   FROM themes t
+                   JOIN comments cm ON cm.id = t.comment_id
+                   JOIN posts p ON p.id = cm.post_id
+                   WHERE p.candidate_id = $1
+                   GROUP BY t.theme ORDER BY cnt DESC LIMIT 5""",
+                row["id"],
+            )
+
         return {
-            "candidate_id": str(row["id"]),
             "username": row["username"],
             "display_name": row["display_name"],
             "total_posts": row["total_posts"],
             "total_comments": row["total_comments"],
             "average_sentiment_score": round(float(row["avg_sentiment"]), 4),
-            "total_engagement": int(row["total_engagement"]),
+            "total_engagement": total_engagement,
+            "avg_likes_per_post": round(total_engagement / total_posts, 1) if total_posts else 0.0,
+            "avg_comments_per_post": round(row["total_comments"] / total_posts, 1) if total_posts else 0.0,
             "sentiment_distribution": {
                 "positive": row["positive"],
                 "negative": row["negative"],
                 "neutral": row["neutral"],
             },
+            "top_themes": [{"theme": t["theme"], "count": t["cnt"]} for t in themes],
         }
 
     our = await _get_candidate_stats(our_username)
