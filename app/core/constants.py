@@ -1,151 +1,83 @@
-"""Application constants.
+"""Constants for theme classification, stop words, and keyword mappings."""
 
-Contains stop words (PT-BR), theme keywords, and analysis thresholds.
-"""
-
-# ---------------------------------------------------------------------------
-# VADER / LLM Thresholds
-# ---------------------------------------------------------------------------
-VADER_POSITIVE_THRESHOLD: float = 0.05
-VADER_NEGATIVE_THRESHOLD: float = -0.05
-LLM_CONFIDENCE_THRESHOLD: float = 0.7
-LLM_AMBIGUOUS_MIN_LENGTH: int = 20
-
-# ---------------------------------------------------------------------------
-# Portuguese Stop Words (minimum 50)
-# Common words filtered out of word cloud / text analysis
-# ---------------------------------------------------------------------------
-STOP_WORDS_PT: set[str] = {
-    # Artigos e preposicoes
-    "a", "ao", "aos", "as", "com", "como", "da", "das", "de", "do", "dos",
-    "em", "entre", "na", "nas", "no", "nos", "num", "numa", "nuns", "numas",
-    "o", "os", "ou", "para", "pra", "pro", "pela", "pelas", "pelo", "pelos",
-    "por", "sem", "sob",
-    # Pronomes
-    "aquela", "aquelas", "aquele", "aqueles", "aquilo", "dela", "delas",
-    "dele", "deles", "ela", "elas", "ele", "eles", "eu", "essa", "essas",
-    "esse", "esses", "esta", "estas", "este", "estes", "lhe", "lhes", "me",
-    "meu", "minha", "meus", "minhas", "nossas", "nossos", "nossa", "nosso",
-    "qual", "quais", "que", "quem", "se", "seu", "sua", "seus", "suas",
-    "te", "ti", "tu", "tua", "tuas", "teu", "teus", "voce", "voces", "vos",
-    "ninguem", "alguem", "algo", "nada", "tudo", "todos", "toda", "todo",
-    "todas", "outro", "outra", "outros", "outras", "cada", "varios",
-    # Verbos auxiliares e comuns (conjugacoes)
-    "ser", "sou", "era", "foi", "sao", "somos", "foram", "seria", "sendo",
-    "estar", "estou", "esta", "estao", "estava", "estamos", "estive",
-    "ter", "tem", "tinha", "tenho", "temos", "teve", "tendo", "tiver",
-    "fazer", "faz", "fez", "faco", "feito", "fazendo",
-    "poder", "pode", "podia", "podem", "podemos",
-    "ir", "vai", "vou", "vao", "vamos", "indo", "ido", "foram",
-    "dar", "deu", "dou", "dando",
-    "ver", "viu", "vejo",
-    "saber", "sei", "sabe", "sabemos",
-    "querer", "quer", "quero", "querem",
-    "dizer", "disse", "diz", "dizendo",
-    "ficar", "fica", "ficou", "ficam",
-    "falar", "fala", "falou",
-    "deixar", "deixa", "deixou",
-    "colocar", "coloca",
-    # Adverbios e conectivos
-    "mais", "mas", "nem", "nao", "sim", "tambem", "ja", "ainda", "sempre",
-    "nunca", "agora", "aqui", "ali", "la", "ca", "onde", "quando", "depois",
-    "antes", "ate", "so", "apenas", "muito", "pouco", "bem", "mal",
-    "demais", "bastante", "tanto", "tao", "assim", "entao", "pois",
-    "porque", "porquem", "portanto", "contudo", "porem", "logo", "enfim",
-    "mesmo", "ai", "ne", "tipo", "meio",
-    # Palavras comuns sem valor analitico
-    "dia", "dias", "vez", "vezes", "ano", "anos", "hoje", "ontem",
-    "gente", "cara", "coisa", "coisas", "parte", "forma", "jeito",
-    "isso", "isto", "ha", "for", "fora",
-    "bom", "boa", "bons", "boas", "grande", "grandes",
-    "novo", "nova", "novos", "novas",
-    "primeiro", "segunda", "sobre",
-    "caso", "foto", "video", "post",
-    # Ruido de redes sociais
-    "kk", "kkk", "kkkk", "kkkkk", "kkkkkk",
-    "haha", "hahaha", "rs", "rsrs", "rsrsrs",
-    "obg", "obrigado", "obrigada", "vlw",
-    "sim", "nao", "ok", "tudo", "oi", "ola",
-    # Verbos/formas informais
-    "ta", "to", "pq", "tb", "tbm", "vc", "vcs",
-    "mto", "mt", "dms", "td",
+STOP_WORDS_PT = {
+    "a", "o", "e", "de", "da", "do", "em", "um", "uma", "que", "no", "na",
+    "os", "as", "dos", "das", "para", "por", "com", "se", "mais", "muito",
+    "mas", "ao", "aos", "tem", "sua", "seu", "seus", "suas", "ela", "ele",
+    "nos", "das", "nao", "sim", "ja", "ou", "foi", "ser", "ter", "esta",
+    "isso", "isto", "aqui", "ali", "la", "voce", "eu", "meu", "minha",
+    "como", "bem", "so", "ate", "entre", "sobre", "todo", "toda", "este",
+    "esta", "esse", "essa", "quando", "qual", "pode", "vai", "vou", "tem",
+    "sao", "era", "eram", "tambem", "acho", "gente", "agora", "ainda",
+    "depois", "antes", "sempre", "nunca", "tudo", "nada", "cada", "mesmo",
+    "coisa", "coisas", "dia", "vez", "vezes", "ano", "anos", "pra", "pro",
+    "uns", "umas", "pelo", "pela", "pelos", "pelas", "num", "numa",
+    "vc", "tb", "ne", "haha", "kkk", "kkkk", "kkkkk", "rs", "rsrs",
+    "obrigado", "obrigada", "bom", "boa", "vamos", "assim", "aquele",
+    "aquela", "onde", "porque", "pois", "entao", "muita", "muitos",
+    "muitas", "outro", "outra", "outros", "outras", "dele", "dela",
+    "deles", "delas", "nessa", "nesse", "dessa", "desse", "disso",
+    "nisso", "com", "sem", "contra", "desde", "durante", "perante",
+    "sob", "sobre", "tras", "mediante",
 }
 
-
-# ---------------------------------------------------------------------------
-# Theme Keywords (9 categories from SCHEMA.md theme_category enum)
-# Maps each theme to a list of Portuguese keywords for keyword-based matching.
-# ---------------------------------------------------------------------------
 THEME_KEYWORDS: dict[str, list[str]] = {
     "saude": [
-        "saude", "hospital", "medico", "sus", "vacina", "remedio",
-        "enfermeiro", "clinica", "atendimento", "posto", "ubs",
-        "farmacia", "doenca", "pandemia", "leito", "mental",
-        "medicamento", "tratamento", "exame", "consulta", "cura",
-        "paciente", "emergencia", "urgencia", "internacao",
+        "saude", "hospital", "medico", "ubs", "vacina", "vacinacao", "sus",
+        "atendimento", "remedio", "doenca", "pandemia", "covid", "posto",
+        "enfermeiro", "emergencia", "clinica", "tratamento", "exame",
+        "consulta", "medicamento", "farmacia", "pronto-socorro",
     ],
     "seguranca": [
-        "seguranca", "policia", "violencia", "crime", "assalto",
-        "roubo", "droga", "trafico", "guarda", "pm", "delegacia",
-        "preso", "arma", "homicidio", "patrulha", "delegada",
-        "justica", "lei", "prender", "bandido", "penal",
-        "investigacao", "policial", "protecao", "feminicidio",
-        "abuso", "denuncia", "vitima", "violencia", "combate",
+        "seguranca", "policia", "violencia", "assalto", "crime", "roubo",
+        "droga", "trafico", "arma", "bandido", "morte", "homicidio",
+        "patrulha", "viatura", "delegacia", "guarda", "furto", "preso",
+        "cadeia", "milicia", "operacao",
     ],
     "educacao": [
-        "educacao", "escola", "professor", "ensino", "aluno",
-        "universidade", "creche", "aula", "estudante", "faculdade",
-        "merenda", "alfabetizacao", "bolsa", "enem", "pedagogia",
-        "crianca", "criancas", "filho", "filhos", "filha",
-        "jovem", "jovens", "futuro", "aprender", "formacao",
-        "infantil", "adolescente", "bebe",
+        "educacao", "escola", "professor", "aluno", "ensino", "universidade",
+        "faculdade", "creche", "aula", "estudante", "enem", "vestibular",
+        "merenda", "bolsa", "formacao", "pedagogia", "infantil",
     ],
     "economia": [
-        "economia", "imposto", "salario", "preco", "inflacao",
-        "comercio", "industria", "pib", "taxa", "renda",
-        "cesta", "dinheiro", "custo", "mercado", "investimento",
-        "pobre", "rico", "desigualdade", "fome", "miseria",
-        "caro", "barato", "conta", "pagar", "divida",
+        "economia", "emprego", "salario", "imposto", "preco", "inflacao",
+        "comercio", "empresa", "lucro", "divida", "renda", "pib",
+        "mercado", "investimento", "orcamento", "gasto", "custo",
+        "caro", "barato", "dinheiro", "conta",
     ],
     "infraestrutura": [
-        "obra", "asfalto", "saneamento", "rua", "ponte",
-        "transporte", "onibus", "estrada", "agua", "esgoto",
-        "iluminacao", "pavimentacao", "buraco", "moradia", "habitacao",
-        "bairro", "cidade", "comunidade", "periferia", "favela",
-        "construcao", "reforma", "praca",
+        "infraestrutura", "obra", "rua", "asfalto", "buraco", "transito",
+        "onibus", "metro", "estrada", "ponte", "saneamento", "esgoto",
+        "agua", "luz", "energia", "moradia", "habitacao", "construcao",
+        "pavimentacao", "iluminacao", "transporte",
     ],
     "corrupcao": [
-        "corrupcao", "roubo", "desvio", "propina", "lavagem",
-        "fraude", "improbidade", "nepotismo", "superfaturamento",
-        "licitacao", "corrupto", "mafia", "mentira", "vergonha",
-        "ladrao", "politicagem", "mamata", "rouba", "safado",
+        "corrupcao", "corrupto", "desvio", "propina", "lavagem", "fraude",
+        "roubar", "roubou", "ladrao", "mensalao", "petrolao", "lava-jato",
+        "improbidade", "nepotismo", "peculato", "superfaturamento",
     ],
     "emprego": [
-        "emprego", "trabalho", "desemprego", "carteira", "vaga",
-        "contratacao", "salario", "clt", "informal", "renda",
-        "capacitacao", "curso", "profissional", "oportunidade", "demissao",
-        "trabalhador", "trabalhadora", "empreendedor", "negocio",
+        "emprego", "desemprego", "trabalho", "vaga", "contratacao",
+        "carteira", "clt", "informal", "autonomo", "freelancer",
+        "demissao", "demitido", "salario", "renda", "capacitacao",
     ],
     "meio_ambiente": [
-        "ambiente", "lixo", "poluicao", "verde", "reciclagem",
-        "desmatamento", "rio", "agua", "ecologia", "sustentabilidade",
-        "queimada", "floresta", "clima", "parque", "saneamento",
-        "animal", "animais", "bicho", "cachorro", "gato", "natureza",
+        "meio ambiente", "ambiental", "desmatamento", "queimada",
+        "poluicao", "reciclagem", "sustentavel", "clima", "floresta",
+        "rio", "nascente", "mangue", "fauna", "flora", "ecologia",
+        "carbono", "emissao", "lixo", "coleta",
     ],
-    "outros": [],
 }
 
-# ---------------------------------------------------------------------------
-# Labels PT-BR para nomes de temas (display no frontend)
-# ---------------------------------------------------------------------------
-THEME_LABELS_PT: dict[str, str] = {
-    "saude": "Saúde",
-    "seguranca": "Segurança",
-    "educacao": "Educação",
-    "economia": "Economia",
-    "infraestrutura": "Infraestrutura",
-    "corrupcao": "Corrupção",
-    "emprego": "Emprego",
-    "meio_ambiente": "Meio Ambiente",
-    "outros": "Outros",
-}
+BIGRAM_TERMS: list[str] = [
+    "meio ambiente",
+    "pronto socorro",
+    "bolsa familia",
+    "minha casa",
+    "saude publica",
+    "seguranca publica",
+    "transporte publico",
+    "educacao publica",
+    "energia solar",
+    "lava jato",
+]

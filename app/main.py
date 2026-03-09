@@ -1,82 +1,57 @@
-"""FastAPI application entry point.
+"""FastAPI application entry point."""
 
-Configures CORS, structured logging, lifespan events (including APScheduler),
-and router registration.
-
-Story 1.7 AC1: APScheduler lifecycle tied to FastAPI lifespan.
-"""
-
-import logging
 from contextlib import asynccontextmanager
-from collections.abc import AsyncIterator
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 
 from app.core.config import settings
-from app.core.logging import setup_logging
-from app.routers import analysis, analytics, health, scraping, suggestions
-from app.scheduler.jobs import shutdown_scheduler, start_scheduler
-
-logger = logging.getLogger(__name__)
+from app.core.logging import logger, setup_logging
+from app.db.migrations import run_migrations
+from app.db.pool import close_db, init_db
+from app.routers import analysis, analytics, health, scraping
+from app.scheduler.jobs import start_scheduler, stop_scheduler
 
 
 @asynccontextmanager
-async def lifespan(application: FastAPI) -> AsyncIterator[None]:
-    """Application lifespan: startup and shutdown hooks.
-
-    AC1: Starts APScheduler on startup and shuts it down on exit.
-    """
+async def lifespan(app: FastAPI):
+    """Application lifespan: startup and shutdown."""
     setup_logging()
-    logger.info("Application starting up")
+    logger.info("Starting Instagram Campaign API")
+
+    # Database
+    await init_db()
+    await run_migrations()
+
+    # Scheduler
     start_scheduler()
+
     yield
-    shutdown_scheduler()
-    logger.info("Application shutting down")
+
+    # Shutdown
+    stop_scheduler()
+    await close_db()
+    logger.info("Application shutdown complete")
 
 
 app = FastAPI(
     title="Instagram Campaign Analytics API",
-    description="Backend para scraping e analise de comentarios do Instagram para campanhas politicas",
-    version="0.1.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
-# ---------------------------------------------------------------------------
-# CORS Configuration
-# ---------------------------------------------------------------------------
-_raw_origins = settings.ALLOWED_ORIGINS.strip()
-if _raw_origins == "*":
-    _allowed_origins: list[str] = ["*"]
-else:
-    _allowed_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
-
+# CORS
+origins = settings.ALLOWED_ORIGINS.split(",") if settings.ALLOWED_ORIGINS != "*" else ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_allowed_origins,
-    allow_credentials=False,
+    allow_origins=origins,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ---------------------------------------------------------------------------
-# Global exception handler (ensures 500s return JSON with CORS headers)
-# ---------------------------------------------------------------------------
-
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    logger.error("unhandled_error", extra={"path": request.url.path, "error": str(exc)})
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "Erro interno do servidor."},
-    )
-
-# ---------------------------------------------------------------------------
-# Router Registration
-# ---------------------------------------------------------------------------
-app.include_router(health.router, tags=["Health"])
-app.include_router(scraping.router, prefix="/api/v1/scraping", tags=["Scraping"])
-app.include_router(analysis.router, prefix="/api/v1/analysis", tags=["Analysis"])
-app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["Analytics"])
-app.include_router(suggestions.router, prefix="/api/v1/analytics", tags=["Suggestions"])
+# Routers
+app.include_router(health.router)
+app.include_router(scraping.router)
+app.include_router(analysis.router)
+app.include_router(analytics.router)

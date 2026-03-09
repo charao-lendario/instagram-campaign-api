@@ -1,157 +1,105 @@
-"""Theme classification service via keyword matching.
+"""Theme classification using keyword matching."""
 
-Story 1.6 AC7/AC8: Classify comments into thematic categories using
-deterministic keyword matching against THEME_KEYWORDS from constants.py.
-
-Each comment can match multiple themes. Comments with no keyword match
-receive the default theme "outros" with confidence 0.5.
-"""
-
-from __future__ import annotations
-
-import logging
+import re
 import unicodedata
-from typing import Any
-from uuid import UUID
 
-from app.core.constants import THEME_KEYWORDS
-from app.db.supabase import get_supabase
-from app.models.enums import AnalysisMethod, ThemeCategory
-from app.models.theme import ThemeCreate
-
-logger = logging.getLogger(__name__)
+from app.core.constants import BIGRAM_TERMS, STOP_WORDS_PT, THEME_KEYWORDS
+from app.core.logging import logger
+from app.db.pool import get_pool
 
 
-def _normalize_text(text: str) -> str:
-    """Lowercase and strip accents for keyword matching.
-
-    AC7a: text is lowercased and normalized (sem acentos para matching).
-    """
-    lowered = text.lower()
-    # NFD decomposition splits accented chars into base + combining mark
-    nfkd = unicodedata.normalize("NFKD", lowered)
-    return "".join(ch for ch in nfkd if not unicodedata.combining(ch))
+def _normalize(text: str) -> str:
+    """Remove accents and lowercase."""
+    nfkd = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in nfkd if not unicodedata.combining(c)).lower()
 
 
-def classify_comment_themes(
-    comment_text: str,
-    comment_id: UUID | None = None,
-) -> list[ThemeCreate]:
-    """Classify a single comment into themes via keyword matching.
+def classify_themes(text: str) -> list[str]:
+    """Classify text into theme categories using keyword matching."""
+    normalized = _normalize(text)
+    found: list[str] = []
 
-    AC7: For each theme in THEME_KEYWORDS, checks if any keyword appears
-    in the normalized text. Returns a ThemeCreate per matched theme with
-    method="keyword" and confidence=1.0.
+    # Check bigrams first
+    for bigram in BIGRAM_TERMS:
+        if bigram in normalized:
+            for theme, keywords in THEME_KEYWORDS.items():
+                if bigram in keywords:
+                    if theme not in found:
+                        found.append(theme)
 
-    AC7d: If no theme matches, returns [ThemeCreate(theme="outros",
-    confidence=0.5, method="keyword")].
-
-    Parameters
-    ----------
-    comment_text:
-        Raw comment text.
-    comment_id:
-        UUID of the comment (required for ThemeCreate but optional
-        here to allow testing without a real ID).
-
-    Returns
-    -------
-    List of ThemeCreate instances, one per matched theme.
-    """
-    normalized = _normalize_text(comment_text)
-    matched_themes: list[ThemeCreate] = []
-
-    # Use a placeholder UUID when comment_id is not provided (testing)
-    cid = comment_id or UUID("00000000-0000-0000-0000-000000000000")
-
-    for theme_name, keywords in THEME_KEYWORDS.items():
-        if theme_name == "outros" or not keywords:
+    # Check unigrams
+    words = re.findall(r"\b\w+\b", normalized)
+    for word in words:
+        if word in STOP_WORDS_PT or len(word) < 3:
             continue
-        for keyword in keywords:
-            normalized_kw = _normalize_text(keyword)
-            if normalized_kw in normalized:
-                matched_themes.append(
-                    ThemeCreate(
-                        comment_id=cid,
-                        theme=ThemeCategory(theme_name),
-                        confidence=1.0,
-                        method=AnalysisMethod.keyword,
-                    )
-                )
-                break  # One match per theme is enough
+        for theme, keywords in THEME_KEYWORDS.items():
+            if word in keywords and theme not in found:
+                found.append(theme)
 
-    if not matched_themes:
-        matched_themes.append(
-            ThemeCreate(
-                comment_id=cid,
-                theme=ThemeCategory.outros,
-                confidence=0.5,
-                method=AnalysisMethod.keyword,
-            )
+    return found if found else ["outros"]
+
+
+async def classify_unclassified_comments() -> int:
+    """Classify themes for comments that don't have theme entries yet."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT c.id, c.text FROM comments c
+               LEFT JOIN themes t ON t.comment_id = c.id
+               WHERE t.id IS NULL AND c.text IS NOT NULL AND c.text != ''"""
         )
 
-    return matched_themes
-
-
-def classify_all_unthemed_comments() -> int:
-    """Classify all comments that have no theme records yet.
-
-    AC8: Fetches comment_ids without entries in themes, runs
-    classify_comment_themes for each, and upserts the results.
-
-    Returns the total number of comments processed.
-    """
-    client = get_supabase()
-
-    # Get all comment IDs that already have theme records
-    themed_result = client.table("themes").select("comment_id").execute()
-    themed_ids: set[str] = {
-        row["comment_id"] for row in (themed_result.data or [])
-    }
-
-    # Get all comments
-    comments_result = (
-        client.table("comments")
-        .select("id, text")
-        .execute()
-    )
-    all_comments: list[dict[str, Any]] = comments_result.data or []
-
-    # Filter to unthemed comments
-    unthemed = [c for c in all_comments if c["id"] not in themed_ids]
-
-    if not unthemed:
-        logger.info("classify_all_unthemed_comments: no unthemed comments found")
+    if not rows:
         return 0
 
-    processed = 0
-    for comment in unthemed:
-        comment_id = UUID(comment["id"])
-        text = comment.get("text", "")
+    count = 0
+    async with pool.acquire() as conn:
+        for row in rows:
+            themes = classify_themes(row["text"])
+            for theme in themes:
+                try:
+                    await conn.execute(
+                        """INSERT INTO themes (comment_id, theme, confidence, method)
+                           VALUES ($1, $2::theme_category, 1.0, 'keyword'::analysis_method)
+                           ON CONFLICT (comment_id, theme, method) DO NOTHING""",
+                        row["id"], theme,
+                    )
+                    count += 1
+                except Exception as e:
+                    logger.debug(f"Theme insert error: {e}")
 
-        themes = classify_comment_themes(text, comment_id)
+    logger.info(f"Classified themes for {count} comment-theme pairs")
+    return count
 
-        for theme_create in themes:
-            try:
-                client.table("themes").upsert(
-                    theme_create.model_dump(mode="json"),
-                    on_conflict="comment_id,theme,method",
-                ).execute()
-            except Exception as exc:
-                logger.warning(
-                    "theme_upsert_failed",
-                    extra={
-                        "comment_id": str(comment_id),
-                        "theme": theme_create.theme.value,
-                        "error_message": str(exc),
-                    },
-                )
 
-        processed += 1
+def extract_words_for_wordcloud(
+    texts: list[str], max_words: int = 200
+) -> list[dict]:
+    """Extract word frequencies for wordcloud, filtering stop words."""
+    word_freq: dict[str, int] = {}
 
-    logger.info(
-        "classify_all_unthemed_comments_completed",
-        extra={"comments_processed": processed},
-    )
+    for text in texts:
+        normalized = _normalize(text)
 
-    return processed
+        # Check bigrams
+        for bigram in BIGRAM_TERMS:
+            occurrences = normalized.count(bigram)
+            if occurrences > 0:
+                word_freq[bigram] = word_freq.get(bigram, 0) + occurrences
+
+        # Unigrams
+        words = re.findall(r"\b\w+\b", normalized)
+        for word in words:
+            if word in STOP_WORDS_PT or len(word) < 3:
+                continue
+            # Skip if part of a counted bigram
+            skip = False
+            for bigram in BIGRAM_TERMS:
+                if word in bigram.split() and bigram in normalized:
+                    skip = True
+                    break
+            if not skip:
+                word_freq[word] = word_freq.get(word, 0) + 1
+
+    sorted_words = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)
+    return [{"word": w, "count": c} for w, c in sorted_words[:max_words]]

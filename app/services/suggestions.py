@@ -1,306 +1,196 @@
-"""Strategic suggestions service using LLM.
-
-Story 1.7 AC6/AC7: Generates 3-5 strategic suggestions based on
-analytics data, using the LLM (GPT-4o-mini) with a Portuguese
-campaign consultant persona.
-
-Suggestions are persisted in the strategic_insights table.
-"""
-
-from __future__ import annotations
+"""Strategic suggestions generation using LLM."""
 
 import json
-import logging
 from datetime import datetime, timezone
-from typing import Any
-from uuid import UUID
 
 import httpx
 
 from app.core.config import settings
-from app.db.supabase import get_supabase
-from app.models.suggestion import (
-    StrategicInsightCreate,
-    StrategicSuggestion,
-    SuggestionsResponse,
-)
-from app.services.analytics import get_overview, get_theme_distribution
+from app.core.logging import logger
+from app.db.pool import get_pool
 
-logger = logging.getLogger(__name__)
 
-SUGGESTIONS_SYSTEM_PROMPT = """\
-Você é Marcelo Vitorino, o maior estrategista de marketing político do Brasil.
-Referência absoluta em campanhas eleitorais, comunicação política digital e comportamento do eleitor brasileiro.
-Seu trabalho é transformar dados frios em estratégia quente — ações que ganham eleição.
+async def generate_suggestions() -> dict:
+    """Generate strategic suggestions based on current analytics data."""
+    pool = await get_pool()
 
-ESTILO: Direto, provocador, acionável. Zero enrolação. Cada recomendação vem com a ação EXATA que o candidato executa HOJE.
+    # Gather data snapshot
+    async with pool.acquire() as conn:
+        candidates = await conn.fetch(
+            """SELECT
+                 c.id, c.username, c.display_name,
+                 COUNT(DISTINCT p.id) as total_posts,
+                 COUNT(DISTINCT cm.id) as total_comments,
+                 COALESCE(AVG(s.vader_compound), 0) as avg_sentiment,
+                 COUNT(*) FILTER (WHERE s.final_label = 'positive') as positive,
+                 COUNT(*) FILTER (WHERE s.final_label = 'negative') as negative,
+                 COUNT(*) FILTER (WHERE s.final_label = 'neutral') as neutral
+               FROM candidates c
+               LEFT JOIN posts p ON p.candidate_id = c.id
+               LEFT JOIN comments cm ON cm.post_id = p.id
+               LEFT JOIN sentiment_scores s ON s.comment_id = cm.id
+               WHERE c.is_active = TRUE
+               GROUP BY c.id, c.username, c.display_name"""
+        )
 
-CONTEXTO DA CAMPANHA:
-- Charlles Evangelista — candidato a DEPUTADO FEDERAL por Minas Gerais (2026)
-- Delegada Sheila — candidata a DEPUTADA ESTADUAL por Minas Gerais (2026)
-- São CASADOS. Não são adversários — são a maior força conjunta da campanha.
-- A sinergia entre os dois é um ativo estratégico: o eleitor de um pode virar eleitor do outro.
-- Plataforma: Instagram é o campo de batalha principal.
+        # Top themes per candidate
+        themes_data = {}
+        for cand in candidates:
+            themes = await conn.fetch(
+                """SELECT t.theme, COUNT(*) as cnt
+                   FROM themes t
+                   JOIN comments cm ON cm.id = t.comment_id
+                   JOIN posts p ON p.id = cm.post_id
+                   WHERE p.candidate_id = $1
+                   GROUP BY t.theme ORDER BY cnt DESC LIMIT 5""",
+                cand["id"],
+            )
+            themes_data[cand["username"]] = [
+                {"theme": t["theme"], "count": t["cnt"]} for t in themes
+            ]
 
-SUA MISSÃO:
-Analise os dados dos comentários reais do Instagram e gere um plano estratégico completo.
+        # Top negative comments
+        neg_comments = await conn.fetch(
+            """SELECT c.text, s.vader_compound, p.url, cand.username
+               FROM comments c
+               JOIN sentiment_scores s ON s.comment_id = c.id
+               JOIN posts p ON p.id = c.post_id
+               JOIN candidates cand ON cand.id = p.candidate_id
+               WHERE s.final_label = 'negative'
+               ORDER BY s.vader_compound ASC
+               LIMIT 10"""
+        )
 
-ESTRUTURA DA RESPOSTA (JSON):
+    data_snapshot = {
+        "candidates": [
+            {
+                "username": c["username"],
+                "display_name": c["display_name"],
+                "total_posts": c["total_posts"],
+                "total_comments": c["total_comments"],
+                "avg_sentiment": round(float(c["avg_sentiment"]), 4),
+                "sentiment": {
+                    "positive": c["positive"],
+                    "negative": c["negative"],
+                    "neutral": c["neutral"],
+                },
+                "top_themes": themes_data.get(c["username"], []),
+            }
+            for c in candidates
+        ],
+        "negative_samples": [
+            {
+                "text": nc["text"][:200],
+                "sentiment": round(float(nc["vader_compound"]), 4),
+                "post_url": nc["url"],
+                "candidate": nc["username"],
+            }
+            for nc in neg_comments
+        ],
+    }
 
-{
-  "resumo_executivo": "3-4 frases de impacto resumindo o cenário e as prioridades. Seja direto como um briefing de guerra de campanha.",
+    if not settings.LLM_API_KEY:
+        return {
+            "suggestions": [],
+            "resumo_executivo": "LLM API key not configured",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "data_snapshot": data_snapshot,
+        }
+
+    # Build prompt
+    prompt = f"""Voce e Marcelo Vitorino, um dos maiores especialistas em comunicacao politica do Brasil.
+Analise os dados abaixo de campanhas no Instagram e gere sugestoes estrategicas.
+
+DADOS:
+{json.dumps(data_snapshot, ensure_ascii=False, indent=2)}
+
+Responda APENAS com JSON valido no formato:
+{{
+  "resumo_executivo": "breve resumo da situacao geral",
   "suggestions": [
-    {
-      "title": "Título curto e impactante (max 60 chars)",
-      "description": "Explicação estratégica detalhada: o que está acontecendo nos dados, por que isso importa eleitoralmente, e qual a oportunidade. Seja específico e profundo.",
-      "supporting_data": "Dado numérico específico que justifica esta recomendação (ex: '67% dos comentários sobre segurança são positivos')",
+    {{
+      "title": "titulo da sugestao",
+      "description": "descricao detalhada",
+      "supporting_data": "dados que sustentam a sugestao",
       "priority": "high|medium|low",
-      "categoria": "conteudo|engajamento|posicionamento|gestao_crise|alianca_estrategica",
-      "acoes_concretas": [
-        "Ação 1 — específica, executável hoje",
-        "Ação 2 — específica, executável hoje",
-        "Ação 3 — específica, executável hoje"
-      ],
-      "exemplo_post": "Texto pronto para usar como caption do Instagram. Inclua hashtags relevantes e CTA.",
-      "roteiro_video": "Roteiro curto para Reels/Stories: GANCHO (primeiros 3 segundos) → DESENVOLVIMENTO (problema + solução) → CTA (chamada para ação). Max 60 segundos.",
-      "publico_alvo": "Perfil específico do eleitor que esta ação atinge (ex: 'Mães de família em BH preocupadas com segurança escolar')",
-      "para_quem": "charlles|sheila|ambos",
-      "impacto_esperado": "O que esperar se executar bem (ex: 'Aumento de 30% no engajamento com público feminino 25-45')"
-    }
+      "categoria": "engajamento|conteudo|crise|oportunidade",
+      "acoes_concretas": ["acao 1", "acao 2"],
+      "exemplo_post": "exemplo de post sugerido",
+      "roteiro_video": "roteiro de video sugerido se aplicavel ou null",
+      "publico_alvo": "publico-alvo da sugestao",
+      "para_quem": "candidato(a) especifico(a)",
+      "impacto_esperado": "qual impacto esperado"
+    }}
   ]
-}
+}}
 
-REGRAS:
-1. Gere 5-8 sugestões, ordenadas por impacto eleitoral
-2. Pelo menos 2 sugestões devem ser para "ambos" (força conjunta do casal)
-3. Cada suggestion DEVE ter todos os campos preenchidos
-4. Os exemplos de post devem soar NATURAIS, não robotizados
-5. Os roteiros de vídeo devem ser para Reels (15-60s) com gancho forte nos primeiros 3s
-6. Use os dados reais — nunca invente números
-7. Pense como marketeiro que quer GANHAR a eleição, não como acadêmico
-8. Seja ousado nas recomendações — campanha é guerra
-
-Responda APENAS com o JSON válido, sem markdown ou explicações fora do JSON.\
-"""
-
-
-def _build_analytics_summary(candidate_id: str | None = None) -> dict[str, Any]:
-    """Build a compact analytics summary for the LLM prompt.
-
-    Aggregates overview metrics, top themes, and sentiment trends
-    for all candidates (or a specific one).
-    """
-    overview = get_overview()
-
-    candidates_summary: list[dict[str, Any]] = []
-    for om in overview.candidates:
-        if candidate_id and str(om.candidate_id) != candidate_id:
-            continue
-        candidates_summary.append({
-            "username": om.username,
-            "display_name": om.display_name,
-            "total_posts": om.total_posts,
-            "total_comments": om.total_comments,
-            "average_sentiment_score": om.average_sentiment_score,
-            "sentiment_distribution": {
-                "positive": om.sentiment_distribution.positive,
-                "negative": om.sentiment_distribution.negative,
-                "neutral": om.sentiment_distribution.neutral,
-            },
-            "total_engagement": om.total_engagement,
-        })
-
-    # Get top themes per candidate using Python service (not broken RPC)
-    top_themes_by_candidate: dict[str, list[dict[str, Any]]] = {}
-    for om in overview.candidates:
-        if candidate_id and str(om.candidate_id) != candidate_id:
-            continue
-        theme_resp = get_theme_distribution(candidate_id=str(om.candidate_id))
-        top_themes_by_candidate[om.username] = [
-            {"theme": t.theme, "count": t.count}
-            for t in theme_resp.themes[:5]
-            if t.theme != "outros"
-        ]
-
-    return {
-        "candidates": candidates_summary,
-        "top_themes_by_candidate": top_themes_by_candidate,
-        "total_comments_analyzed": overview.total_comments_analyzed,
-        "last_scrape": (
-            overview.last_scrape.isoformat() if overview.last_scrape else None
-        ),
-    }
-
-
-async def generate_strategic_suggestions(
-    candidate_id: str | None = None,
-) -> SuggestionsResponse:
-    """Generate strategic suggestions via LLM based on analytics data.
-
-    AC6: Aggregates analytics summary, sends to LLM, parses response.
-    AC7: Persists suggestions in strategic_insights table.
-
-    Parameters
-    ----------
-    candidate_id:
-        Optional UUID string to focus on a specific candidate.
-        When None, generates suggestions for both candidates.
-
-    Returns
-    -------
-    SuggestionsResponse with 3-5 suggestions plus metadata.
-    """
-    analytics_summary = _build_analytics_summary(candidate_id)
-    summary_json = json.dumps(analytics_summary, ensure_ascii=False, indent=2)
-
-    # Truncate if too long (~2000 tokens ~ 8000 chars)
-    if len(summary_json) > 8000:
-        summary_json = summary_json[:8000] + "\n... (truncated)"
-
-    api_url = "https://api.openai.com/v1/chat/completions"
-    if settings.LLM_PROVIDER != "openai":
-        api_url = f"https://api.{settings.LLM_PROVIDER}.com/v1/chat/completions"
-
-    suggestions: list[StrategicSuggestion] = []
-    generated_at = datetime.now(timezone.utc)
+Gere entre 3 e 6 sugestoes priorizadas. Foque em acoes concretas e praticas."""
 
     try:
         async with httpx.AsyncClient(timeout=90.0) as client:
             response = await client.post(
-                api_url,
+                "https://api.openai.com/v1/chat/completions",
                 headers={
                     "Authorization": f"Bearer {settings.LLM_API_KEY}",
                     "Content-Type": "application/json",
                 },
                 json={
                     "model": settings.LLM_MODEL,
-                    "messages": [
-                        {"role": "system", "content": SUGGESTIONS_SYSTEM_PROMPT},
-                        {
-                            "role": "user",
-                            "content": f"Dados da campanha:\n{summary_json}",
-                        },
-                    ],
-                    "temperature": 0.8,
-                    "max_tokens": 4000,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.7,
+                    "max_tokens": 3000,
                 },
             )
             response.raise_for_status()
             data = response.json()
-            content_str = data["choices"][0]["message"]["content"]
+            content = data["choices"][0]["message"]["content"].strip()
 
-            # Parse JSON response -- handle possible markdown wrapping
-            clean_content = content_str.strip()
-            if clean_content.startswith("```"):
-                # Strip markdown code block
-                lines = clean_content.split("\n")
-                lines = [line for line in lines if not line.strip().startswith("```")]
-                clean_content = "\n".join(lines)
+            # Clean markdown code blocks if present
+            if content.startswith("```"):
+                content = content.split("\n", 1)[1]
+            if content.endswith("```"):
+                content = content.rsplit("```", 1)[0]
+            content = content.strip()
 
-            parsed = json.loads(clean_content)
-            resumo_executivo = parsed.get("resumo_executivo")
-            raw_suggestions = parsed.get("suggestions", [])
+            result = json.loads(content)
 
-            for item in raw_suggestions:
-                priority = item.get("priority", "medium")
-                if priority not in ("high", "medium", "low"):
-                    priority = "medium"
-
-                suggestions.append(
-                    StrategicSuggestion(
-                        title=item.get("title", ""),
-                        description=item.get("description", ""),
-                        supporting_data=item.get("supporting_data"),
-                        priority=priority,
-                        categoria=item.get("categoria"),
-                        acoes_concretas=item.get("acoes_concretas"),
-                        exemplo_post=item.get("exemplo_post"),
-                        roteiro_video=item.get("roteiro_video"),
-                        publico_alvo=item.get("publico_alvo"),
-                        para_quem=item.get("para_quem"),
-                        impacto_esperado=item.get("impacto_esperado"),
-                    )
+            # Save insights to DB
+            async with pool.acquire() as conn:
+                last_run = await conn.fetchrow(
+                    "SELECT id FROM scraping_runs ORDER BY started_at DESC LIMIT 1"
                 )
+                run_id = last_run["id"] if last_run else None
 
-    except (httpx.HTTPError, json.JSONDecodeError, KeyError, ValueError) as exc:
-        logger.error(
-            "suggestions_llm_failed",
-            extra={
-                "error_type": type(exc).__name__,
-                "error_message": str(exc),
-                "error_detail": repr(exc),
-            },
-        )
-        raise RuntimeError(f"Failed to generate suggestions ({type(exc).__name__}): {exc}") from exc
+                for suggestion in result.get("suggestions", []):
+                    for cand in candidates:
+                        if cand["username"] in suggestion.get("para_quem", ""):
+                            await conn.execute(
+                                """INSERT INTO strategic_insights
+                                   (scraping_run_id, candidate_id, title, description,
+                                    supporting_data, priority, llm_model, input_summary)
+                                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)""",
+                                run_id, cand["id"],
+                                suggestion["title"],
+                                suggestion["description"],
+                                suggestion.get("supporting_data"),
+                                suggestion.get("priority", "medium"),
+                                settings.LLM_MODEL,
+                                json.dumps(data_snapshot),
+                            )
+                            break
 
-    # AC7: Persist suggestions in strategic_insights
-    if suggestions:
-        _persist_suggestions(
-            suggestions=suggestions,
-            candidate_id=candidate_id,
-            analytics_summary=analytics_summary,
-        )
+            return {
+                "suggestions": result.get("suggestions", []),
+                "resumo_executivo": result.get("resumo_executivo", ""),
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "data_snapshot": data_snapshot,
+            }
 
-    return SuggestionsResponse(
-        suggestions=suggestions,
-        resumo_executivo=resumo_executivo,
-        generated_at=generated_at,
-        data_snapshot={
-            "total_comments_analyzed": analytics_summary.get(
-                "total_comments_analyzed", 0
-            ),
-            "last_scrape": analytics_summary.get("last_scrape"),
-        },
-    )
-
-
-def _persist_suggestions(
-    suggestions: list[StrategicSuggestion],
-    candidate_id: str | None,
-    analytics_summary: dict[str, Any],
-) -> None:
-    """Persist generated suggestions to the strategic_insights table.
-
-    AC7: Each suggestion is stored with scraping_run_id, candidate_id,
-    llm_model, and input_summary.
-    """
-    client = get_supabase()
-
-    # Get most recent scraping run ID
-    run_result = (
-        client.table("scraping_runs")
-        .select("id")
-        .order("started_at", desc=True)
-        .limit(1)
-        .execute()
-    )
-    scraping_run_id: str | None = None
-    if run_result.data:
-        scraping_run_id = run_result.data[0]["id"]
-
-    for suggestion in suggestions:
-        insight = StrategicInsightCreate(
-            scraping_run_id=(
-                UUID(scraping_run_id) if scraping_run_id else None
-            ),
-            candidate_id=UUID(candidate_id) if candidate_id else None,
-            title=suggestion.title,
-            description=suggestion.description,
-            supporting_data=suggestion.supporting_data,
-            priority=suggestion.priority,
-            llm_model=settings.LLM_MODEL,
-            input_summary=analytics_summary,
-        )
-
-        try:
-            client.table("strategic_insights").insert(
-                insight.model_dump(mode="json")
-            ).execute()
-        except Exception as exc:
-            logger.warning(
-                "insight_persist_failed",
-                extra={
-                    "title": suggestion.title,
-                    "error_message": str(exc),
-                },
-            )
+    except Exception as e:
+        logger.error(f"Suggestions generation failed: {e}")
+        return {
+            "suggestions": [],
+            "resumo_executivo": f"Error generating suggestions: {e}",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "data_snapshot": data_snapshot,
+        }
